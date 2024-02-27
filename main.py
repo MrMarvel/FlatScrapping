@@ -113,8 +113,10 @@ def main():
                 logger.info(f"Новое состояние квартиры \"{flat.label}\" {flat.status}")
                 table.append(new_row)
                 flats_saved[flat.label] = flat
-        history_flats = pd.DataFrame(table, columns=columns)
-        history_flats.to_csv(HISTORY_FILENAME, index=False)
+        if len(history_flats) < len(table):
+            logger.info("Сохраняем изменения")
+            history_flats = pd.DataFrame(table, columns=columns)
+            history_flats.to_csv(HISTORY_FILENAME, index=False)
     pass
     driver.close()
     pass
