@@ -3,7 +3,6 @@ from enum import StrEnum, auto
 
 FREE_COLOR = 'rgba(255, 238, 218, 0.64)'
 RESERVED_COLOR = '???'
-HISTORY_FILENAME = 'history_flats.csv'
 
 
 class Flat:
@@ -11,6 +10,7 @@ class Flat:
         AVAILABLE = auto()
         RESERVED = auto()
         SOLD = auto()
+
 
         def __str__(self):
             return self.value

@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 from enum import StrEnum
 
 import pandas as pd
@@ -8,14 +9,18 @@ from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 
-from flat import HISTORY_FILENAME, Flat, parse_flat_from_text
-from utils import initSeleniumWebDriver
+from flat import Flat, parse_flat_from_text
+from utils.selenium_utils import initSeleniumWebDriver
+from utils.temp_file import TempFile
+
+HISTORY_FILENAME = 'history_flats.csv.txt'
+HISTORY_TEMP_FILENAME = 'history_flats.tmp'
 
 
 def get_flats_on_floor(driver: WebDriver, floor_number=7) -> list[Flat]:
     flats = []
     ignore_flat_errors = False
-    for try_num in range(1, 3+1):
+    for try_num in range(1, 3 + 1):
         logger.info(f"Получаем список квартир с {floor_number} этажа" +
                     (f'. Повторная попытка {try_num}' if try_num > 1 else ''))
         if try_num >= 3:
@@ -46,9 +51,9 @@ def get_flats_on_floor(driver: WebDriver, floor_number=7) -> list[Flat]:
                 except Exception as e:
                     logger.exception(e)
                     if ignore_flat_errors:
-                        logger.warning(f"Ошибка при получении квартиры #{flat_html_num+1}. Пропускаем")
+                        logger.warning(f"Ошибка при получении квартиры #{flat_html_num + 1}. Пропускаем")
                         continue
-                    logger.warning(f"Ошибка при получении квартиры #{flat_html_num+1}")
+                    logger.warning(f"Ошибка при получении квартиры #{flat_html_num + 1}")
                     raise Exception("Flat Error")
             return flats
         except Exception as _:
@@ -74,6 +79,29 @@ class FlatColumns(StrEnum):
         return list(FlatColumns.__members__.values()).index(self)
 
 
+def safe_df_append_to_history(new_df: pd.DataFrame):
+    try:
+        was_df = pd.read_csv(HISTORY_FILENAME, encoding='utf-8')
+        if len(new_df) <= len(was_df):
+            logger.warning(f"История не изменилась. Пропускаем сохранение")
+            return
+        with TempFile(HISTORY_TEMP_FILENAME) as tmp_file:
+            new_df.to_csv(tmp_file, index=False, encoding='utf-8')
+            new_file_df = pd.read_csv(tmp_file, encoding='utf-8')
+            if not new_file_df.equals(new_df):
+                raise Exception(f"История изменилась во время сохранения. Отмена сохранения. new_df:\n"
+                                f"{new_file_df[~pd.DataFrame(new_file_df == new_df).all(axis=1)].to_string()}")
+            new_file_df_p1 = new_file_df[:len(was_df)]
+            if not new_file_df_p1.equals(was_df):
+                raise Exception(f"Старая часть истории не сохранилась. Отмена сохранения. new_df:\n"
+                                f"{new_file_df_p1[~pd.DataFrame(new_file_df_p1 == was_df).all(axis=1)].to_string()}")
+            shutil.move(HISTORY_TEMP_FILENAME, HISTORY_FILENAME)
+    except Exception as e:
+        logger.exception(e)
+        logger.warning("Не удалось сохранить историю. Отмена сохранения")
+        raise Exception("Ошибка сохранения")
+
+
 @logger.catch(reraise=True)
 def main():
     logger.add('log.txt', format="{time} {level} {message}", level="DEBUG", rotation="1MB")
@@ -85,22 +113,22 @@ def main():
 
     if not os.path.exists(HISTORY_FILENAME):
         logger.warning(f"Файл {os.path.abspath(HISTORY_FILENAME)} не найден. Создаем новый")
-        history_flats = pd.DataFrame(columns=columns)
-        history_flats.to_csv('history_flats.csv', index=False)
-    history_flats = pd.read_csv('history_flats.csv')
-    history_flats.columns = columns
+        working_history_df = pd.DataFrame(columns=columns)
+        working_history_df.to_csv(HISTORY_FILENAME, index=False)
+    working_history_df = pd.read_csv(HISTORY_FILENAME)
+    working_history_df.columns = columns
 
     flats_saved: dict[str, Flat] = dict()
-    for _, history_flat in history_flats.iterrows():
+    for _, history_flat in working_history_df.iterrows():
         flat_label = str(history_flat[FlatColumns.FLAT])
         flat_status_str = str(history_flat[FlatColumns.STATUS])
-        flat_status = Flat.Status(flat_status_str)
+        flat_status = Flat.Status(flat_status_str.lower())
         flats_saved[flat_label] = Flat(flat_label, flat_status)
         assert flats_saved[flat_label] == Flat(flat_label, flat_status)
         pass
 
     for floor_number in range(2, 8 + 1):
-        table: list[list] = list(history_flats.values.tolist())
+        working_history_table: list[list] = list(working_history_df.values.tolist())
         # Список квартир
         flats_fetch = get_flats_on_floor(driver, floor_number=floor_number)
         for flat in flats_fetch:
@@ -108,15 +136,15 @@ def main():
             new_row = [pd.Timestamp.now().strftime('%d-%m-%Y %H:%M'), floor_number, flat.label, flat.status]
             if flat_was is None:
                 logger.info(f"Новая квартира \"{flat.label}\" {flat.status}")
-                table.append(new_row)
+                working_history_table.append(new_row)
             elif flat_was != flat:
                 logger.info(f"Новое состояние квартиры \"{flat.label}\" {flat.status}")
-                table.append(new_row)
+                working_history_table.append(new_row)
                 flats_saved[flat.label] = flat
-        if len(history_flats) < len(table):
+        if len(working_history_df) < len(working_history_table):
             logger.info("Сохраняем изменения")
-            history_flats = pd.DataFrame(table, columns=columns)
-            history_flats.to_csv(HISTORY_FILENAME, index=False)
+            working_history_df = pd.DataFrame(working_history_table, columns=columns)
+            safe_df_append_to_history(working_history_df)
     pass
     driver.close()
     pass
