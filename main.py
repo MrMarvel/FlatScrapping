@@ -3,18 +3,35 @@ import re
 import shutil
 from enum import StrEnum
 
+import bs4
 import pandas as pd
+from bs4 import BeautifulSoup
 from loguru import logger
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 
-from flat import Flat, parse_flat_from_text
+from flat import Flat, parse_flat_from_textcolor, parse_flat_from_text
 from utils.selenium_utils import initSeleniumWebDriver
 from utils.temp_file import TempFile
 
 HISTORY_FILENAME = 'history_flats.csv.txt'
 HISTORY_TEMP_FILENAME = 'history_flats.tmp'
+
+
+def get_cards_info(root: bs4.Tag) -> list[bs4.Tag]:
+    flat_info_cards = root.find_all(attrs={'class': 'imp-tooltip'})
+    return flat_info_cards
+
+
+def get_flat(info_card: bs4.Tag) -> Flat:
+    labels = info_card.find_all('h3')
+    if len(labels) == 0:
+        raise ValueError(f"Не удалось найти название квартиры: {info_card}")
+    flat_label = labels[0].text
+    text_status = labels[1].text if len(labels) >= 2 else ''
+
+    return parse_flat_from_text(flat_label, text_status)
 
 
 def get_flats_on_floor(driver: WebDriver, floor_number=7) -> list[Flat]:
@@ -29,31 +46,20 @@ def get_flats_on_floor(driver: WebDriver, floor_number=7) -> list[Flat]:
         try:
             driver.get(f"https://vik.company/planirovka-{floor_number}-etazh/")
             driver.refresh()
+            page_source = BeautifulSoup(driver.page_source, features="html.parser")
+            info_cards = get_cards_info(page_source)
 
-            flat_info_html = driver.find_elements(By.CLASS_NAME, 'imp-tooltip')
-            flat_labels = [x.find_element(By.TAG_NAME, 'h3').get_attribute('innerHTML') for x in flat_info_html]
-
-            flats_cards_html: list[WebElement] = driver.find_elements(By.TAG_NAME, "polygon")
-            for flat_html_num, flat_html in enumerate(flats_cards_html):
+            for info_card_num, info_card in enumerate(info_cards):
                 try:
-                    title: str = flat_html.get_attribute('data-shape-title')
-                    if 'квартира' not in title.lower():
-                        continue
-                    color_string: str = flat_html.value_of_css_property('fill')
-                    label_numbers = re.findall("\\d+", title)
-                    flat_rect_html_number = int(label_numbers[0])
-                    flat_info_html_number = flat_rect_html_number - 1
-                    flat_label = flat_labels[flat_info_html_number]
-
-                    flat = parse_flat_from_text(flat_label, color_string)
+                    flat = get_flat(info_card)
+                    logger.info(f"{flat.label} {flat.status}")
                     flats.append(flat)
-                    logger.info(f"{flat.label} {flat.status} {color_string}")
                 except Exception as e:
                     logger.exception(e)
                     if ignore_flat_errors:
-                        logger.warning(f"Ошибка при получении квартиры #{flat_html_num + 1}. Пропускаем")
+                        logger.warning(f"Ошибка при получении квартиры #{info_card_num + 1}. Пропускаем")
                         continue
-                    logger.warning(f"Ошибка при получении квартиры #{flat_html_num + 1}")
+                    logger.warning(f"Ошибка при получении квартиры #{info_card_num + 1}")
                     raise Exception("Flat Error")
             return flats
         except Exception as _:
@@ -87,12 +93,13 @@ def safe_df_append_to_history(new_df: pd.DataFrame):
             return
         with TempFile(HISTORY_TEMP_FILENAME) as tmp_file:
             new_df.to_csv(tmp_file, index=False, encoding='utf-8')
-            new_file_df = pd.read_csv(tmp_file, encoding='utf-8')
-            if not new_file_df.equals(new_df):
+
+            new_file_df = pd.read_csv(tmp_file, encoding='utf-8', dtype=str)
+            if not new_file_df.equals(new_df.astype(str)):
                 raise Exception(f"История изменилась во время сохранения. Отмена сохранения. new_df:\n"
                                 f"{new_file_df[~pd.DataFrame(new_file_df == new_df).all(axis=1)].to_string()}")
             new_file_df_p1 = new_file_df[:len(was_df)]
-            if not new_file_df_p1.equals(was_df):
+            if not new_file_df_p1.equals(was_df.astype(str)):
                 raise Exception(f"Старая часть истории не сохранилась. Отмена сохранения. new_df:\n"
                                 f"{new_file_df_p1[~pd.DataFrame(new_file_df_p1 == was_df).all(axis=1)].to_string()}")
             shutil.move(HISTORY_TEMP_FILENAME, HISTORY_FILENAME)
