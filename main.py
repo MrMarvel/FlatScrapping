@@ -48,6 +48,12 @@ def get_flats_on_floor(driver: WebDriver, floor_number=7) -> list[Flat]:
             driver.refresh()
             page_source = BeautifulSoup(driver.page_source, features="html.parser")
             info_cards = get_cards_info(page_source)
+            if len(info_cards) == 0:
+                if ignore_flat_errors:
+                    logger.warning(f"Не найдены квартиры на {floor_number} этаже. Пропускаем этаж")
+                    return []
+                logger.error(f"Не найдены квартиры на {floor_number} этаже")
+                raise Exception("Ошибка отсутствия квартир на этаже")
 
             for info_card_num, info_card in enumerate(info_cards):
                 try:
@@ -59,11 +65,11 @@ def get_flats_on_floor(driver: WebDriver, floor_number=7) -> list[Flat]:
                     if ignore_flat_errors:
                         logger.warning(f"Ошибка при получении квартиры #{info_card_num + 1}. Пропускаем")
                         continue
-                    logger.warning(f"Ошибка при получении квартиры #{info_card_num + 1}")
+                    logger.error(f"Ошибка при получении квартиры #{info_card_num + 1}")
                     raise Exception("Flat Error")
             return flats
         except Exception as _:
-            logger.warning(f"Ошибка при получении квартир с {floor_number} этажа.")
+            logger.error(f"Ошибка при получении квартир с {floor_number} этажа.")
     raise Exception("Не удалось получить список квартир с этажа")
 
 
